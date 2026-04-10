@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>X200 DIESEL V3 - SECURE</title>
+    <style>
+        body { background:#111; color:#0f0; font-family: monospace; padding:10px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px; }
+        button { padding: 15px; border: 1px solid #0f0; background: #222; color: #0f0; font-weight: bold; cursor: pointer; }
+        button:active { background: #0f0; color: #000; }
+        #display { background: #000; border: 1px solid #333; height: 400px; overflow-y: auto; padding: 10px; font-size: 14px; }
+        .stat { color: #fff; margin-bottom: 2px; border-bottom: 1px solid #222; }
+    </style>
+</head>
+<body>
+    <h2 style="color:#fff; text-align:center;">X200 DIESEL - DIAGNOSTIC</h2>
+    
+    <div class="grid">
+        <button onclick="connect()">1. CONNECT & UNLOCK</button>
+        <button onclick="readAll()">2. READ SENSORS (21)</button>
+        <button onclick="toggleStream()" id="streamBtn">3. LIVE STREAM</button>
+        <button onclick="clearFaults()" style="color:red; border-color:red;">4. CLEAR FAULTS</button>
+        <button onclick="disconnectPort()" style="color:orange; border-color:orange;">5. DISCONNECT</button>
+    </div>
+
+    <div id="display">READY...</div>
+
+    <script>
+        let port, streaming = false, pinger;
+        const disp = document.getElementById('display');
+        const log = (m) => { disp.innerHTML += `<div class="stat">> ${m}</div>`; disp.scrollTop = disp.scrollHeight; };
+
+        async function send(cmd) {
+            const encoder = new TextEncoder();
+            const decoder = new TextDecoder();
+            const writer = port.writable.getWriter();
+            await writer.write(encoder.encode(cmd));
+            writer.releaseLock();
+
+            const reader = port.readable.getReader();
+            let res = "";
+            const timeout = Date.now() + 1500;
+            try {
+                while (Date.now() < timeout && !res.includes(">")) {
+                    const { value } = await reader.read();
+                    res += decoder.decode(value);
+                }
+            } finally { reader.releaseLock(); }
+            return res.trim();
+        }
+
+        function startPinger() {
+            if (pinger) clearInterval(pinger);
+            pinger = setInterval(async () => {
+                if (!streaming) await send("3E00\r"); 
+            }, 2000);
+        }
+
+        async function disconnectPort() {
+            if (pinger) clearInterval(pinger);
+            streaming = false;
+            if (port) {
+                await port.close();
+                port = null;
+                log("PORT DISCONNECTED SUCCESSFULLY");
+            }
+        }
+
+        async function connect() {
+            try {
+                port = await navigator.serial.requestPort();
+                await port.open({ baudRate: 38400 });
+                disp.innerHTML = "<b>INITIALIZING...</b><br>";
+
+                await send("ATZ\r");
+                await send("ATSP6\r");
+                await send("ATSH7E0\r");
+                
+                let auth = await send("1003\r");
+                log("SESSION: " + auth);
+
+                if (auth.includes("5003") || auth.includes("50 03")) {
+                    startPinger();
+                    
+                    log("GETTING SEED (27 01)...");
+                    let seedRes = await send("2701\r");
+                    log("SEED RES: " + seedRes);
+
+                    if (seedRes.includes("6701") || seedRes.includes("67 01")) {
+                        let raw = seedRes.replace(/\s/g, "");
+                        let seedHex = raw.substring(raw.indexOf("6701") + 4, raw.indexOf("6701") + 8);
+                        
+                        log("SEED FOUND: " + seedHex);
+                        
+                        let keyHex = "55AA";
+                        
+                        log("SENDING KEY: " + keyHex);
+                        let unlock = await send("2702" + keyHex + "\r");
+                        
+                        if (unlock.includes("6702") || unlock.includes("67 02")) {
+                            log("SUCCESS: ECU UNLOCKED");
+                        } else {
+                            log("UNLOCK FAILED: " + unlock);
+                        }
+                    }
+                } else {
+                    log("CONNECTION FAILED - KEY OFF?");
+                }
+            } catch (e) { log("ERROR: " + e.message); }
+        }
+
+        async function readAll() {
+            if (!port) return;
+            // Swapped to Service 21 Record IDs
+            const pids = ["2101", "2102"];
+            for (let p of pids) {
+                let r = await send(p + "\r");
+                log(p + ": " + r);
+            }
+        }
+
+        async function toggleStream() {
+            if (!port) return;
+            streaming = !streaming;
+            document.getElementById('streamBtn').innerText = streaming ? "STOP" : "STREAM";
+            while (streaming) {
+                await readAll();
+            }
+        }
+
+        async function clearFaults() {
+            if (confirm("Reset ECU?")) await send("04\r");
+        }
+    </script>
+</body>
+</html>
