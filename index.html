@@ -1,25 +1,51 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>X200 DIESEL V3 - SECURE</title>
+    <title>X200 DIESEL - MASTER CONTROL V2</title>
     <style>
-        body { background:#111; color:#0f0; font-family: monospace; padding:10px; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px; }
-        button { padding: 15px; border: 1px solid #0f0; background: #222; color: #0f0; font-weight: bold; cursor: pointer; }
-        button:active { background: #0f0; color: #000; }
-        #display { background: #000; border: 1px solid #333; height: 400px; overflow-y: auto; padding: 10px; font-size: 14px; }
-        .stat { color: #fff; margin-bottom: 2px; border-bottom: 1px solid #222; }
+        body { background:#111; color:#0f0; font-family: monospace; padding:10px; line-height: 1.4; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 15px; }
+        .section-label { grid-column: span 3; color: #555; border-bottom: 1px solid #333; margin-top: 10px; font-size: 12px; text-transform: uppercase; }
+        button { padding: 12px 5px; border: 1px solid; background: #222; font-weight: bold; cursor: pointer; font-family: monospace; font-size: 12px; }
+        
+        .btn-green { color: #0f0; border-color: #0f0; }
+        .btn-orange { color: orange; border-color: orange; }
+        .btn-red { color: red; border-color: red; }
+        .btn-blue { color: #00bfff; border-color: #00bfff; }
+        
+        button:active { background: #444; }
+        button:disabled { color: #444; border-color: #444; cursor: not-allowed; }
+        
+        #display { background: #000; border: 1px solid #333; height: 500px; overflow-y: auto; padding: 10px; font-size: 13px; }
+        .stat { color: #fff; margin-bottom: 2px; border-bottom: 1px solid #222; white-space: pre-wrap; }
+        .highlight { color: #00bfff; }
+        .warn { color: orange; }
     </style>
 </head>
 <body>
-    <h2 style="color:#fff; text-align:center;">X200 DIESEL - DIAGNOSTIC</h2>
+    <h2 style="color:#fff; text-align:center; margin: 5px 0;">X200 DIESEL - MASTER CONTROL</h2>
+    <div style="text-align:center; font-size: 10px; color: #666; margin-bottom: 10px;">INTEGRITY PROTOCOL ACTIVE | UDS/OBD INTERFACE</div>
     
     <div class="grid">
-        <button onclick="connect()">1. CONNECT & UNLOCK</button>
-        <button onclick="readAll()">2. READ SENSORS (21)</button>
-        <button onclick="toggleStream()" id="streamBtn">3. LIVE STREAM</button>
-        <button onclick="clearFaults()" style="color:red; border-color:red;">4. CLEAR FAULTS</button>
-        <button onclick="disconnectPort()" style="color:orange; border-color:orange;">5. DISCONNECT</button>
+        <div class="section-label">System Connection</div>
+        <button class="btn-green" onclick="connect()">0. CONNECT & UNLOCK</button>
+        <button class="btn-red" onclick="disconnectPort()">DISCONNECT</button>
+        <button class="btn-orange" onclick="clearLogs()">CLEAR CONSOLE</button>
+
+        <div class="section-label">Standard Diagnostics</div>
+        <button class="btn-green" onclick="checkFaults()">READ DTCs</button>
+        <button class="btn-green" onclick="readPIDs()">LIVE DATA (MAP)</button>
+        <button class="btn-green" onclick="toggleStream()" id="streamBtn">START LIVE STREAM</button>
+
+        <div class="section-label">Discovery & Identity</div>
+        <button class="btn-blue" onclick="discoverCapabilities()">DISCOVER PIDs</button>
+        <button class="btn-blue" onclick="readVehicleInfo()">ECU IDENTITY (VIN)</button>
+        <button class="btn-blue" onclick="readMonitorStatus()">MONITOR STATUS</button>
+
+        <div class="section-label">Advanced Functions</div>
+        <button class="btn-orange" onclick="readFreezeFrame()">FREEZE FRAME</button>
+        <button class="btn-red" onclick="clearFaults()">CLEAR ECU FAULTS</button>
+        <button class="btn-blue" onclick="uploadLogData()">DOWNLOAD LOG</button>
     </div>
 
     <div id="display">READY...</div>
@@ -27,9 +53,15 @@
     <script>
         let port, streaming = false, pinger;
         const disp = document.getElementById('display');
-        const log = (m) => { disp.innerHTML += `<div class="stat">> ${m}</div>`; disp.scrollTop = disp.scrollHeight; };
+        
+        const log = (m, type='') => { 
+            const className = type ? ` class="${type}"` : '';
+            disp.innerHTML += `<div class="stat">> <span${className}>${m}</span></div>`; 
+            disp.scrollTop = disp.scrollHeight; 
+        };
 
         async function send(cmd) {
+            if (!port) return "ERROR: NO PORT";
             const encoder = new TextEncoder();
             const decoder = new TextDecoder();
             const writer = port.writable.getWriter();
@@ -41,94 +73,144 @@
             const timeout = Date.now() + 1500;
             try {
                 while (Date.now() < timeout && !res.includes(">")) {
-                    const { value } = await reader.read();
+                    const { value, done } = await reader.read();
+                    if (done) break;
                     res += decoder.decode(value);
                 }
-            } finally { reader.releaseLock(); }
-            return res.trim();
+            } catch (e) {
+                console.error(e);
+            } finally { 
+                reader.releaseLock(); 
+            }
+            return res.trim().replace(/>/g, '');
         }
 
         function startPinger() {
             if (pinger) clearInterval(pinger);
+            // 3E00 is "Tester Present" - prevents session timeout
             pinger = setInterval(async () => {
-                if (!streaming) await send("3E00\r"); 
+                if (port && !streaming) await send("3E00\r"); 
             }, 2000);
-        }
-
-        async function disconnectPort() {
-            if (pinger) clearInterval(pinger);
-            streaming = false;
-            if (port) {
-                await port.close();
-                port = null;
-                log("PORT DISCONNECTED SUCCESSFULLY");
-            }
         }
 
         async function connect() {
             try {
                 port = await navigator.serial.requestPort();
                 await port.open({ baudRate: 38400 });
-                disp.innerHTML = "<b>INITIALIZING...</b><br>";
-
+                log("INITIALIZING ADAPTER...");
                 await send("ATZ\r");
                 await send("ATSP6\r");
                 await send("ATSH7E0\r");
                 
+                log("REQUESTING EXTENDED SESSION (10 03)...");
                 let auth = await send("1003\r");
-                log("SESSION: " + auth);
-
+                
                 if (auth.includes("5003") || auth.includes("50 03")) {
                     startPinger();
-                    
-                    log("GETTING SEED (27 01)...");
+                    log("SECURITY ACCESS: REQUESTING SEED...");
                     let seedRes = await send("2701\r");
-                    log("SEED RES: " + seedRes);
-
+                    
                     if (seedRes.includes("6701") || seedRes.includes("67 01")) {
-                        let raw = seedRes.replace(/\s/g, "");
-                        let seedHex = raw.substring(raw.indexOf("6701") + 4, raw.indexOf("6701") + 8);
-                        
-                        log("SEED FOUND: " + seedHex);
-                        
-                        let keyHex = "55AA";
-                        
-                        log("SENDING KEY: " + keyHex);
-                        let unlock = await send("2702" + keyHex + "\r");
-                        
+                        log("SECURITY ACCESS: SENDING KEY (55AA)...");
+                        let unlock = await send("270255AA\r");
                         if (unlock.includes("6702") || unlock.includes("67 02")) {
-                            log("SUCCESS: ECU UNLOCKED");
+                            log("SUCCESS: ECU FULLY UNLOCKED", "highlight");
                         } else {
-                            log("UNLOCK FAILED: " + unlock);
+                            log("UNLOCKED FAILED: INVALID KEY", "warn");
                         }
                     }
                 } else {
-                    log("CONNECTION FAILED - KEY OFF?");
+                    log("SESSION REJECTED. CHECK IGNITION STATUS.", "warn");
                 }
-            } catch (e) { log("ERROR: " + e.message); }
+            } catch (e) { log("ERROR: " + e.message, "warn"); }
         }
 
-        async function readAll() {
-            if (!port) return;
-            // Swapped to Service 21 Record IDs
-            const pids = ["2101", "2102"];
-            for (let p of pids) {
-                let r = await send(p + "\r");
-                log(p + ": " + r);
+        async function checkFaults() {
+            log("CHECKING STORED DTCs (MODE 03)...");
+            let res = await send("03\r");
+            log("RAW DATA: " + res, "highlight");
+        }
+
+        async function readPIDs() {
+            log("FETCHING GW4D20 MAP DATA...");
+            const pids = { "010C": "RPM", "0105": "COOLANT", "0123": "RAIL PRESSURE" };
+            for (let [id, name] of Object.entries(pids)) {
+                let res = await send(id + "\r");
+                log(`${name} [${id}]: ${res}`);
             }
+        }
+
+        async function discoverCapabilities() {
+            log("SCANNING SUPPORTED PID BITMASKS...");
+            const ranges = ["00", "20", "40", "60", "80"];
+            for (let range of ranges) {
+                let res = await send("01" + range + "\r");
+                log(`RANGE ${range}-${parseInt(range, 16)+32}: ${res}`, "highlight");
+            }
+        }
+
+        async function readVehicleInfo() {
+            log("QUERYING SERVICE 09 (VEHICLE INFO)...");
+            const info = { "02": "VIN", "04": "CALIBRATION ID", "0A": "ECU NAME" };
+            for (let [id, name] of Object.entries(info)) {
+                let res = await send("09" + id + "\r");
+                log(`${name}: ${res}`);
+            }
+        }
+
+        async function readMonitorStatus() {
+            log("READING READINESS MONITORS (01 01)...");
+            let res = await send("0101\r");
+            log("MONITOR STATUS: " + res, "highlight");
         }
 
         async function toggleStream() {
             if (!port) return;
             streaming = !streaming;
-            document.getElementById('streamBtn').innerText = streaming ? "STOP" : "STREAM";
+            document.getElementById('streamBtn').innerText = streaming ? "STOP STREAM" : "START LIVE STREAM";
             while (streaming) {
-                await readAll();
+                let r = await send("010C\r"); 
+                log("LIVE RPM: " + r);
+                if (!streaming) break;
+                await new Promise(r => setTimeout(r, 150));
             }
         }
 
+        async function readFreezeFrame() {
+            log("READING MODE 02 FREEZE FRAME...");
+            let res = await send("020000\r");
+            log("DATA: " + res);
+        }
+
         async function clearFaults() {
-            if (confirm("Reset ECU?")) await send("04\r");
+            if (!confirm("Confirm command 04: Clear all stored DTCs?")) return;
+            let res = await send("04\r");
+            log("RESPONSE: " + res, "warn");
+        }
+
+        async function clearLogs() {
+            disp.innerHTML = "";
+            log("CONSOLE CLEARED");
+        }
+
+        async function disconnectPort() {
+            if (pinger) clearInterval(pinger);
+            streaming = false;
+            if (port) { 
+                await port.close(); 
+                port = null; 
+                log("PORT CLOSED", "warn"); 
+            }
+        }
+
+        function uploadLogData() {
+            const blob = new Blob([disp.innerText], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `X200_Log_${new Date().getTime()}.txt`;
+            a.click();
+            log("LOG EXPORTED");
         }
     </script>
 </body>
