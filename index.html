@@ -132,21 +132,41 @@
         }
 
         async function readPIDs() {
-            log("FETCHING GW4D20 MAP DATA...");
-            const pids = { "010C": "RPM", "0105": "COOLANT", "0123": "RAIL PRESSURE" };
-            for (let [id, name] of Object.entries(pids)) {
-                let res = await send(id + "\r");
-                log(`${name} [${id}]: ${res}`);
+            if (!port) return;
+            log("FETCHING UDS DATA (SERVICE 22)...", "highlight");
+            
+            // These are the common Delphi DIDs for the GW4D20
+            const udsPIDs = { 
+                "110C": "ENGINE RPM", 
+                "1105": "COOLANT TEMP", 
+                "1123": "RAIL PRESSURE",
+                "1199": "BOOST PRESSURE" 
+            };
+            
+            for (let [id, name] of Object.entries(udsPIDs)) {
+                let res = await send("22" + id + "\r");
+                if (res.includes("62")) {
+                    log(`${name} [${id}]: ${res}`);
+                } else {
+                    log(`${name} [${id}]: NOT SUPPORTED (7F)`, "warn");
+                }
             }
         }
 
         async function discoverCapabilities() {
-            log("SCANNING SUPPORTED PID BITMASKS...");
-            const ranges = ["00", "20", "40", "60", "80"];
-            for (let range of ranges) {
-                let res = await send("01" + range + "\r");
-                log(`RANGE ${range}-${parseInt(range, 16)+32}: ${res}`, "highlight");
+            if (!port) return;
+            log("SCANNING UDS SYSTEM IDENTIFIERS (F1 SERIES)...", "highlight");
+            
+            // Standard UDS Info IDs
+            const infoIDs = ["F190", "F187", "F188", "F189", "F191", "F197"];
+            
+            for (let id of infoIDs) {
+                let res = await send("22" + id + "\r");
+                if (res.includes("62")) {
+                    log(`ID [${id}]: ${res}`);
+                }
             }
+            log("UDS DISCOVERY COMPLETE.");
         }
 
         async function readVehicleInfo() {
