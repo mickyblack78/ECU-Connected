@@ -198,9 +198,9 @@
         for (let cmd of targetPids) { await sendCommand(cmd); await new Promise(r => setTimeout(r, 500)); }
     }
 let isMusicPlaying = false;
-const audio = new Audio(); // Replace with your file path
+const audio = new Audio(E.C.U.mp3.mp3); // Replace with your file path
 
-function toggleMusic() {
+    function toggleMusic() {
     isMusicPlaying = !isMusicPlaying;
     isMusicPlaying ? audio.play() : audio.pause();
     log(isMusicPlaying ? "Music: ON" : "Music: OFF");
